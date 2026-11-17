@@ -30,19 +30,40 @@
   --card-foreground: #e8edf5;
   --primary: #f59e0b;
   --primary-foreground: #0a0f1e;
-  --secondary: #111c2d;
+  --secondary: #162032;
   --secondary-foreground: #94a3b8;
   --muted: #0d1929;
   --muted-foreground: #64748b;
   --accent: #0ea5e9;
   --accent-foreground: #ffffff;
-  --border: rgba(148, 163, 184, 0.1);
+  --border: rgba(148, 163, 184, 0.14);
   --ring: #f59e0b;
   --radius: 6px;
 
   --safe: #10b981;
   --danger: #f43f5e;
   --warning: #f59e0b;
+}
+
+[data-theme="light"] {
+  --background: #f1f5f9;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --primary: #d97706;
+  --primary-foreground: #ffffff;
+  --secondary: #e2e8f0;
+  --secondary-foreground: #334155;
+  --muted: #f8fafc;
+  --muted-foreground: #64748b;
+  --accent: #0284c7;
+  --accent-foreground: #ffffff;
+  --border: rgba(148, 163, 184, 0.28);
+  --ring: #d97706;
+
+  --safe: #059669;
+  --danger: #e11d48;
+  --warning: #d97706;
 }
 
 html, body, #root {
@@ -55,6 +76,7 @@ body {
   font-family: 'Inter', sans-serif;
   font-size: 14px;
   line-height: 1.5;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 * {
