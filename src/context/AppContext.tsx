@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
+import { parseCSV } from "../utils/csv";
 import {
   Transaction,
   NetworkRecord,
@@ -131,7 +132,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     fraudThreshold: 0.5,
     anomalyContamination: 0.08,
     maxDisplayRows: 50,
-    maxFileSize: 50,
+    maxFileSize: 600,
     alertEnabled: true,
   });
 
@@ -321,173 +322,132 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   };
 
-  // Real CSV parsing for Credit Card Fraud
+  // Parse and analyze a real credit-card CSV. Required columns are validated
+  // instead of silently substituting synthetic values for missing data.
   const parseAndAnalyzeFraudCSV = async (file: File): Promise<{ success: boolean; count: number; error?: string }> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const text = e.target?.result as string;
-          if (!text) {
-            resolve({ success: false, count: 0, error: "Uploaded file is empty." });
-            return;
-          }
+    try {
+      const text = await file.text();
+      if (!text.trim()) return { success: false, count: 0, error: "The uploaded CSV is empty." };
 
-          const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-          if (lines.length < 2) {
-            resolve({ success: false, count: 0, error: "File must contain a header and at least one data row." });
-            return;
-          }
+      const rows = parseCSV(text);
+      if (rows.length < 2) return { success: false, count: 0, error: "CSV must contain a header and at least one data row." };
 
-          const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
-          const timeIdx = header.indexOf("time");
-          const amountIdx = header.indexOf("amount");
-          const v1Idx = header.indexOf("v1");
-          const v14Idx = header.indexOf("v14");
-          const v17Idx = header.indexOf("v17");
+      const header = rows[0].map((value) => value.trim().toLowerCase());
+      const index = (name: string) => header.indexOf(name);
+      const timeIdx = index("time");
+      const amountIdx = index("amount");
+      const v1Idx = index("v1");
+      const v14Idx = index("v14");
+      const v17Idx = index("v17");
+      const requiredColumns: [string, number][] = [["Time", timeIdx], ["Amount", amountIdx], ["V1", v1Idx], ["V14", v14Idx], ["V17", v17Idx]];
+      const missing = requiredColumns.filter(([, idx]) => idx < 0).map(([name]) => name);
+      if (missing.length) {
+        return { success: false, count: 0, error: `This does not look like a credit-card fraud dataset. Missing required columns: ${missing.join(", ")}.` };
+      }
 
-          const parsedTxns: Transaction[] = [];
-          const maxRows = Math.min(lines.length - 1, 500);
+      const parsedTxns: Transaction[] = [];
+      for (let i = 1; i < rows.length; i++) {
+        const parts = rows[i];
+        const values = [timeIdx, amountIdx, v1Idx, v14Idx, v17Idx].map((idx) => Number(parts[idx]));
+        if (values.some((value) => !Number.isFinite(value))) continue;
+        const [time, amount, v1, v14, v17] = values;
+        const result = predictSingleTransaction(amount, time, v1, v14, v17);
+        parsedTxns.push({
+          id: `TXN-${String(i).padStart(5, "0")}`,
+          time: Math.round(time),
+          amount: Number(amount.toFixed(2)),
+          prediction: result.prediction,
+          confidence: result.confidence,
+          v1: Number(v1.toFixed(4)),
+          v14: Number(v14.toFixed(4)),
+          v17: Number(v17.toFixed(4)),
+        });
+      }
 
-          for (let i = 1; i <= maxRows; i++) {
-            const parts = lines[i].split(",");
-            if (parts.length < 3) continue;
+      if (!parsedTxns.length) return { success: false, count: 0, error: "No valid numeric transaction rows were found. Check the Time, Amount, V1, V14 and V17 columns." };
 
-            const time = timeIdx >= 0 && !isNaN(parseFloat(parts[timeIdx])) ? parseFloat(parts[timeIdx]) : i * 12;
-            const amount = amountIdx >= 0 && !isNaN(parseFloat(parts[amountIdx])) ? parseFloat(parts[amountIdx]) : parseFloat(parts[parts.length - 2]) || 120.0;
-            const v1 = v1Idx >= 0 && !isNaN(parseFloat(parts[v1Idx])) ? parseFloat(parts[v1Idx]) : (Math.sin(i) * 3);
-            const v14 = v14Idx >= 0 && !isNaN(parseFloat(parts[v14Idx])) ? parseFloat(parts[v14Idx]) : (Math.cos(i) * 3);
-            const v17 = v17Idx >= 0 && !isNaN(parseFloat(parts[v17Idx])) ? parseFloat(parts[v17Idx]) : (Math.sin(i * 2) * 2.5);
-
-            const result = predictSingleTransaction(amount, time, v1, v14, v17);
-
-            parsedTxns.push({
-              id: `TXN-${String(i).padStart(5, "0")}`,
-              time: Math.round(time),
-              amount: +amount.toFixed(2),
-              prediction: result.prediction,
-              confidence: result.confidence,
-              v1: +v1.toFixed(4),
-              v14: +v14.toFixed(4),
-              v17: +v17.toFixed(4),
-            });
-          }
-
-          if (parsedTxns.length === 0) {
-            resolve({ success: false, count: 0, error: "Could not parse any valid transaction rows." });
-            return;
-          }
-
-          setTransactions(parsedTxns);
-          setFraudDatasetName(file.name);
-          addDataset({
-            name: file.name,
-            type: "Credit Card Transactions",
-            records: parsedTxns.length,
-            size: `${(file.size / 1024).toFixed(1)} KB`,
-          });
-          addReportAudit({
-            title: `Batch Analysis: ${file.name}`,
-            type: "Fraud Detection",
-            totalRecords: parsedTxns.length,
-            flaggedCount: parsedTxns.filter((t) => t.prediction === "Potentially Fraudulent").length,
-            rate: `${((parsedTxns.filter((t) => t.prediction === "Potentially Fraudulent").length / parsedTxns.length) * 100).toFixed(2)}%`,
-          });
-
-          resolve({ success: true, count: parsedTxns.length });
-        } catch (err: any) {
-          resolve({ success: false, count: 0, error: err.message || "Failed to process CSV." });
-        }
-      };
-      reader.onerror = () => resolve({ success: false, count: 0, error: "Error reading file." });
-      reader.readAsText(file);
-    });
+      setTransactions(parsedTxns);
+      setFraudDatasetName(file.name);
+      addDataset({ name: file.name, type: "Credit Card Transactions", records: parsedTxns.length, size: `${(file.size / 1024).toFixed(1)} KB` });
+      const flagged = parsedTxns.filter((item) => item.prediction === "Potentially Fraudulent").length;
+      addReportAudit({
+        title: `Batch Analysis: ${file.name}`,
+        type: "Fraud Detection",
+        totalRecords: parsedTxns.length,
+        flaggedCount: flagged,
+        rate: `${((flagged / parsedTxns.length) * 100).toFixed(2)}%`,
+      });
+      return { success: true, count: parsedTxns.length };
+    } catch (error) {
+      return { success: false, count: 0, error: error instanceof Error ? error.message : "Failed to read the CSV file." };
+    }
   };
 
-  // Real CSV parsing for Network Activity
+  // Supports the project's named network CSV format and headerless NSL-KDD
+  // rows (duration, protocol_type, service, flag, src_bytes, dst_bytes, ...).
   const parseAndAnalyzeNetworkCSV = async (file: File): Promise<{ success: boolean; count: number; error?: string }> => {
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try {
-          const text = e.target?.result as string;
-          if (!text) {
-            resolve({ success: false, count: 0, error: "Uploaded network file is empty." });
-            return;
-          }
+    try {
+      const text = await file.text();
+      if (!text.trim()) return { success: false, count: 0, error: "The uploaded network CSV is empty." };
 
-          const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-          if (lines.length < 2) {
-            resolve({ success: false, count: 0, error: "Network file must contain a header and at least one row." });
-            return;
-          }
+      const rows = parseCSV(text);
+      if (!rows.length) return { success: false, count: 0, error: "No readable CSV rows were found." };
 
-          const header = lines[0].split(",").map((h) => h.trim().toLowerCase());
-          const protoIdx = header.findIndex((h) => h.includes("protocol"));
-          const serviceIdx = header.findIndex((h) => h.includes("service"));
-          const flagIdx = header.findIndex((h) => h.includes("flag"));
-          const srcIdx = header.findIndex((h) => h.includes("src_bytes") || h.includes("srcbytes"));
-          const dstIdx = header.findIndex((h) => h.includes("dst_bytes") || h.includes("dstbytes"));
-          const durIdx = header.findIndex((h) => h.includes("duration"));
+      const normalize = (value: string) => value.trim().toLowerCase().replace(/[\s-]+/g, "_");
+      const first = rows[0].map(normalize);
+      const hasHeader = first.some((value) => ["protocol_type", "protocol", "service", "src_bytes", "srcbytes"].includes(value));
+      const header = hasHeader ? first : ["duration", "protocol_type", "service", "flag", "src_bytes", "dst_bytes"];
+      const dataRows = hasHeader ? rows.slice(1) : rows;
+      const find = (...names: string[]) => header.findIndex((value) => names.includes(value));
+      const durationIdx = find("duration", "dur");
+      const protoIdx = find("protocol_type", "protocol", "proto");
+      const serviceIdx = find("service");
+      const flagIdx = find("flag", "state");
+      const srcIdx = find("src_bytes", "srcbytes", "source_bytes", "sbytes");
+      const dstIdx = find("dst_bytes", "dstbytes", "destination_bytes", "dbytes");
+      const requiredColumns: [string, number][] = [["protocol_type", protoIdx], ["service", serviceIdx], ["flag", flagIdx], ["src_bytes", srcIdx], ["dst_bytes", dstIdx]];
+      const missing = requiredColumns.filter(([, idx]) => idx < 0).map(([name]) => name);
+      if (missing.length) {
+        return { success: false, count: 0, error: `Unsupported network CSV format. Missing required columns: ${missing.join(", ")}. Expected duration, protocol_type, service, flag, src_bytes and dst_bytes (or a headerless NSL-KDD file).` };
+      }
 
-          const parsedRecords: NetworkRecord[] = [];
-          const maxRows = Math.min(lines.length - 1, 500);
+      const parsedRecords: NetworkRecord[] = [];
+      for (let i = 0; i < dataRows.length; i++) {
+        const parts = dataRows[i];
+        const protocol = (parts[protoIdx] ?? "").trim().toLowerCase();
+        const service = (parts[serviceIdx] ?? "").trim().toLowerCase();
+        const flag = (parts[flagIdx] ?? "").trim().toUpperCase();
+        const srcBytes = Number(parts[srcIdx]);
+        const dstBytes = Number(parts[dstIdx]);
+        const duration = durationIdx >= 0 ? Number(parts[durationIdx]) : 0;
+        if (!protocol || !service || !flag || ![srcBytes, dstBytes, duration].every(Number.isFinite)) continue;
 
-          for (let i = 1; i <= maxRows; i++) {
-            const parts = lines[i].split(",");
-            if (parts.length < 3) continue;
+        const result = predictSingleNetwork(protocol, service, flag, srcBytes, dstBytes, duration);
+        parsedRecords.push({
+          id: `NET-${String(i + 1).padStart(5, "0")}`,
+          protocol, service, flag, srcBytes, dstBytes, duration,
+          status: result.status,
+          anomalyScore: result.anomalyScore,
+        });
+      }
 
-            const protocol = protoIdx >= 0 ? parts[protoIdx].trim().toLowerCase() : ["tcp", "udp", "icmp"][i % 3];
-            const service = serviceIdx >= 0 ? parts[serviceIdx].trim().toLowerCase() : ["http", "ssh", "dns", "ftp"][i % 4];
-            const flag = flagIdx >= 0 ? parts[flagIdx].trim().toUpperCase() : ["SF", "S0", "REJ"][i % 3];
-            const srcBytes = srcIdx >= 0 && !isNaN(parseInt(parts[srcIdx])) ? parseInt(parts[srcIdx]) : (i % 8 === 0 ? 150000 : 2500);
-            const dstBytes = dstIdx >= 0 && !isNaN(parseInt(parts[dstIdx])) ? parseInt(parts[dstIdx]) : (i % 8 === 0 ? 0 : 5400);
-            const duration = durIdx >= 0 && !isNaN(parseFloat(parts[durIdx])) ? parseFloat(parts[durIdx]) : 1.5;
+      if (!parsedRecords.length) return { success: false, count: 0, error: "No valid network records found. Ensure the protocol, service, flag, src_bytes and dst_bytes columns contain values." };
 
-            const result = predictSingleNetwork(protocol, service, flag, srcBytes, dstBytes, duration);
-
-            parsedRecords.push({
-              id: `NET-${String(i).padStart(5, "0")}`,
-              protocol,
-              service,
-              flag,
-              srcBytes,
-              dstBytes,
-              duration,
-              status: result.status,
-              anomalyScore: result.anomalyScore,
-            });
-          }
-
-          if (parsedRecords.length === 0) {
-            resolve({ success: false, count: 0, error: "No valid network records found in CSV." });
-            return;
-          }
-
-          setNetworkRecords(parsedRecords);
-          setNetworkDatasetName(file.name);
-          addDataset({
-            name: file.name,
-            type: "Network Activity",
-            records: parsedRecords.length,
-            size: `${(file.size / 1024).toFixed(1)} KB`,
-          });
-          addReportAudit({
-            title: `Network Scan: ${file.name}`,
-            type: "Network Anomaly",
-            totalRecords: parsedRecords.length,
-            flaggedCount: parsedRecords.filter((r) => r.status === "Suspicious Activity").length,
-            rate: `${((parsedRecords.filter((r) => r.status === "Suspicious Activity").length / parsedRecords.length) * 100).toFixed(1)}%`,
-          });
-
-          resolve({ success: true, count: parsedRecords.length });
-        } catch (err: any) {
-          resolve({ success: false, count: 0, error: err.message || "Failed to process Network CSV." });
-        }
-      };
-      reader.onerror = () => resolve({ success: false, count: 0, error: "Error reading file." });
-      reader.readAsText(file);
-    });
+      setNetworkRecords(parsedRecords);
+      setNetworkDatasetName(file.name);
+      addDataset({ name: file.name, type: "Network Activity", records: parsedRecords.length, size: `${(file.size / 1024).toFixed(1)} KB` });
+      const flagged = parsedRecords.filter((item) => item.status === "Suspicious Activity").length;
+      addReportAudit({
+        title: `Network Scan: ${file.name}`,
+        type: "Network Anomaly",
+        totalRecords: parsedRecords.length,
+        flaggedCount: flagged,
+        rate: `${((flagged / parsedRecords.length) * 100).toFixed(1)}%`,
+      });
+      return { success: true, count: parsedRecords.length };
+    } catch (error) {
+      return { success: false, count: 0, error: error instanceof Error ? error.message : "Failed to read the network CSV file." };
+    }
   };
 
   const loadDemoFraudData = () => {

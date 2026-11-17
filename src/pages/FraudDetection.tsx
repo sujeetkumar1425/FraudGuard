@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { useApp } from "../context/AppContext";
+import { downloadCSV as saveCSV } from "../utils/csv";
 
 const SAFE = "#10b981";
 const DANGER = "#f43f5e";
@@ -85,12 +86,14 @@ export default function FraudDetection() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.name.endsWith(".csv")) {
+    if (!file.name.toLowerCase().endsWith(".csv")) {
       setErrorMsg("Please upload a valid .csv file.");
+      if (fileRef.current) fileRef.current.value = "";
       return;
     }
     if (file.size > config.maxFileSize * 1024 * 1024) {
       setErrorMsg(`File too large. Maximum size is ${config.maxFileSize}MB.`);
+      if (fileRef.current) fileRef.current.value = "";
       return;
     }
 
@@ -98,8 +101,14 @@ export default function FraudDetection() {
     setSuccessMsg("");
     setLoading(true);
 
-    const res = await parseAndAnalyzeFraudCSV(file);
-    setLoading(false);
+    let res: Awaited<ReturnType<typeof parseAndAnalyzeFraudCSV>>;
+    try {
+      res = await parseAndAnalyzeFraudCSV(file);
+    } catch (error) {
+      res = { success: false, count: 0, error: error instanceof Error ? error.message : "Unexpected upload error." };
+    } finally {
+      setLoading(false);
+    }
 
     if (res.success) {
       setSuccessMsg(`Successfully processed ${res.count} transactions from ${file.name}`);
@@ -117,19 +126,10 @@ export default function FraudDetection() {
   };
 
   const downloadResultsCSV = () => {
-    const rows = [
-      ["Transaction ID", "Time (s)", "Amount ($)", "V1", "V14", "V17", "Prediction", "Confidence (%)"].join(","),
-      ...transactions.map((t) =>
-        [t.id, t.time, t.amount, t.v1, t.v14, t.v17, t.prediction, t.confidence].join(",")
-      ),
-    ];
-    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `fraud_detection_${fraudDatasetName}`;
-    a.click();
-    URL.revokeObjectURL(url);
+    saveCSV(`fraud_detection_results_${new Date().toISOString().slice(0, 10)}.csv`, [
+      ["Transaction ID", "Time (s)", "Amount ($)", "V1", "V14", "V17", "Prediction", "Confidence (%)"],
+      ...transactions.map((t) => [t.id, t.time, t.amount, t.v1, t.v14, t.v17, t.prediction, t.confidence]),
+    ]);
   };
 
   const filtered = transactions
@@ -189,9 +189,8 @@ export default function FraudDetection() {
           {/* Upload Zone & Quick Sample Tools */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div
-              className="lg:col-span-2 rounded-xl p-6 flex flex-col items-center justify-center gap-2.5 cursor-pointer border-2 border-dashed transition-all hover:border-[var(--primary)] text-center"
+              className="lg:col-span-2 rounded-xl p-6 flex flex-col items-center justify-center gap-2.5 border-2 border-dashed transition-all text-center"
               style={{ background: "var(--card)", borderColor: "var(--border)" }}
-              onClick={() => fileRef.current?.click()}
             >
               <div className="text-3xl opacity-60">📂</div>
               <div>
@@ -199,10 +198,23 @@ export default function FraudDetection() {
                   {loading ? "Analyzing transactions…" : `Current Dataset: ${fraudDatasetName}`}
                 </p>
                 <p className="text-xs mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-                  Click to upload CSV with columns: Time, Amount, V1–V28 · Max {config.maxFileSize}MB
+                  Upload CSV with columns: Time, Amount, V1–V28 · Max {config.maxFileSize}MB
                 </p>
               </div>
-              <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleUpload} />
+
+              <label
+                className="mt-1 px-5 py-2.5 rounded-lg text-xs font-mono font-semibold cursor-pointer transition-colors inline-flex items-center gap-2"
+                style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
+              >
+                📁 Choose CSV File
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={handleUpload}
+                />
+              </label>
 
               {loading && (
                 <div className="flex items-center gap-2 mt-2">

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useApp } from "../context/AppContext";
+import { downloadCSV } from "../utils/csv";
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -76,13 +77,9 @@ export default function Reports() {
       `False Negatives (FN),${fn}`,
       `True Positives (TP),${tp}`,
     ];
-    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `fraud_report_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    rows.push("", "--- SCAN RESULTS ---", "Transaction ID,Time (s),Amount,V1,V14,V17,Prediction,Confidence (%)");
+    transactions.forEach((item) => rows.push([item.id, item.time, item.amount, item.v1, item.v14, item.v17, item.prediction, item.confidence].join(",")));
+    downloadCSV(`fraud_report_${new Date().toISOString().slice(0, 10)}.csv`, rows.map((line) => line.split(",")));
   };
 
   const downloadNetReport = () => {
@@ -107,13 +104,9 @@ export default function Reports() {
       "VIVA NOTE: Supervised evaluation metrics cannot be computed without labeled ground truth.",
       "Isolation Forest is unsupervised and reports average partition path lengths & contamination ratios.",
     ];
-    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `network_anomaly_report_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    rows.push("", "--- SCAN RESULTS ---", "Record ID,Protocol,Service,Flag,Source Bytes,Destination Bytes,Duration (s),Status,Anomaly Score");
+    networkRecords.forEach((item) => rows.push([item.id, item.protocol, item.service, item.flag, item.srcBytes, item.dstBytes, item.duration, item.status, item.anomalyScore].join(",")));
+    downloadCSV(`network_anomaly_report_${new Date().toISOString().slice(0, 10)}.csv`, rows.map((line) => line.split(",")));
   };
 
   const handlePrint = () => {
@@ -123,7 +116,7 @@ export default function Reports() {
   return (
     <div className="flex flex-col gap-6 p-6 overflow-y-auto h-full">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className={`flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${printMode ? "no-print" : ""}`}>
         <div>
           <h1 className="font-display text-2xl font-bold" style={{ color: "var(--foreground)" }}>
             Analytical Reports & Audit Log
@@ -155,7 +148,7 @@ export default function Reports() {
 
       {printMode ? (
         /* Formal Printable College Evaluation Report */
-        <div className="rounded-xl p-8 border max-w-4xl mx-auto shadow-sm" style={{ background: "var(--card)", borderColor: "var(--border)" }}>
+        <div className="print-report rounded-xl p-8 border max-w-4xl mx-auto shadow-sm" style={{ background: "var(--card)", borderColor: "var(--border)" }}>
           <div className="border-b pb-6 mb-6 text-center">
             <span className="text-[11px] font-mono uppercase tracking-widest text-muted-foreground">College Mini Project Deliverable</span>
             <h2 className="font-display text-2xl font-bold mt-1" style={{ color: "var(--foreground)" }}>
@@ -201,9 +194,37 @@ export default function Reports() {
             </div>
           </div>
 
+          <div className="border-t pt-4 mb-6">
+            <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--foreground)" }}>
+              3. Network Scan Findings (up to 100 flagged records)
+            </h3>
+            {networkRecords.filter((record) => record.status === "Suspicious Activity").slice(0, 100).length ? (
+              <table className="w-full text-[9px] border-collapse">
+                <thead><tr><th className="text-left border p-1">Record ID</th><th className="text-left border p-1">Protocol</th><th className="text-left border p-1">Service</th><th className="text-left border p-1">Flag</th><th className="text-left border p-1">Source Bytes</th><th className="text-left border p-1">Destination Bytes</th><th className="text-left border p-1">Anomaly Score</th></tr></thead>
+                <tbody>{networkRecords.filter((record) => record.status === "Suspicious Activity").slice(0, 100).map((record) => (
+                  <tr key={record.id}><td className="border p-1">{record.id}</td><td className="border p-1">{record.protocol}</td><td className="border p-1">{record.service}</td><td className="border p-1">{record.flag}</td><td className="border p-1">{record.srcBytes}</td><td className="border p-1">{record.dstBytes}</td><td className="border p-1">{record.anomalyScore}</td></tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="text-xs">No suspicious network records in the active scan.</p>}
+          </div>
+
+          <div className="border-t pt-4 mb-6">
+            <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--foreground)" }}>
+              4. Fraud Scan Findings (up to 100 flagged transactions)
+            </h3>
+            {transactions.filter((transaction) => transaction.prediction === "Potentially Fraudulent").slice(0, 100).length ? (
+              <table className="w-full text-[9px] border-collapse">
+                <thead><tr><th className="text-left border p-1">Transaction ID</th><th className="text-left border p-1">Time</th><th className="text-left border p-1">Amount</th><th className="text-left border p-1">V1</th><th className="text-left border p-1">V14</th><th className="text-left border p-1">V17</th><th className="text-left border p-1">Confidence</th></tr></thead>
+                <tbody>{transactions.filter((transaction) => transaction.prediction === "Potentially Fraudulent").slice(0, 100).map((transaction) => (
+                  <tr key={transaction.id}><td className="border p-1">{transaction.id}</td><td className="border p-1">{transaction.time}</td><td className="border p-1">{transaction.amount}</td><td className="border p-1">{transaction.v1}</td><td className="border p-1">{transaction.v14}</td><td className="border p-1">{transaction.v17}</td><td className="border p-1">{transaction.confidence}%</td></tr>
+                ))}</tbody>
+              </table>
+            ) : <p className="text-xs">No potentially fraudulent transactions in the active scan.</p>}
+          </div>
+
           <div className="border-t pt-4">
             <h3 className="text-sm font-semibold mb-2" style={{ color: "var(--foreground)" }}>
-              3. Examiner Viva Notes & Methodological Justification
+              5. Examiner Viva Notes & Methodological Justification
             </h3>
             <p className="text-xs leading-relaxed text-muted-foreground mb-2">
               <strong>Class Imbalance:</strong> In credit card fraud, genuine transactions outnumber fraudulent events by &gt;99:1. Reporting 99% accuracy is trivial (a dumb classifier predicting all zeros achieves 99.3%). Thus, <em>Precision, Recall, and F1-Score</em> are the genuine indicators of model viability. <code className="font-mono">class_weight="balanced"</code> was applied to penalize false negatives severely.

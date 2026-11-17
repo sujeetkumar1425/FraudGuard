@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { ScatterChart, Scatter, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, BarChart, Bar } from "recharts";
 import { useApp } from "../context/AppContext";
+import { downloadCSV as saveCSV } from "../utils/csv";
 
 const NORMAL = "#0ea5e9";
 const ANOMALY = "#f59e0b";
@@ -85,12 +86,14 @@ export default function NetworkAnomaly() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.name.endsWith(".csv")) {
+    if (!file.name.toLowerCase().endsWith(".csv")) {
       setErrorMsg("Please upload a valid .csv file.");
+      if (fileRef.current) fileRef.current.value = "";
       return;
     }
     if (file.size > config.maxFileSize * 1024 * 1024) {
       setErrorMsg(`File too large. Maximum size is ${config.maxFileSize}MB.`);
+      if (fileRef.current) fileRef.current.value = "";
       return;
     }
 
@@ -98,8 +101,14 @@ export default function NetworkAnomaly() {
     setSuccessMsg("");
     setLoading(true);
 
-    const res = await parseAndAnalyzeNetworkCSV(file);
-    setLoading(false);
+    let res: Awaited<ReturnType<typeof parseAndAnalyzeNetworkCSV>>;
+    try {
+      res = await parseAndAnalyzeNetworkCSV(file);
+    } catch (error) {
+      res = { success: false, count: 0, error: error instanceof Error ? error.message : "Unexpected upload error." };
+    } finally {
+      setLoading(false);
+    }
 
     if (res.success) {
       setSuccessMsg(`Successfully processed ${res.count} network records from ${file.name}`);
@@ -117,17 +126,10 @@ export default function NetworkAnomaly() {
   };
 
   const downloadCSV = () => {
-    const rows = [
-      ["Record ID", "Protocol", "Service", "Flag", "Src Bytes", "Dst Bytes", "Duration (s)", "Status", "Anomaly Score"].join(","),
-      ...networkRecords.map((r) => [r.id, r.protocol, r.service, r.flag, r.srcBytes, r.dstBytes, r.duration, r.status, r.anomalyScore].join(",")),
-    ];
-    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `network_anomaly_${networkDatasetName}`;
-    a.click();
-    URL.revokeObjectURL(url);
+    saveCSV(`network_anomaly_results_${new Date().toISOString().slice(0, 10)}.csv`, [
+      ["Record ID", "Protocol", "Service", "Flag", "Src Bytes", "Dst Bytes", "Duration (s)", "Status", "Anomaly Score"],
+      ...networkRecords.map((r) => [r.id, r.protocol, r.service, r.flag, r.srcBytes, r.dstBytes, r.duration, r.status, r.anomalyScore]),
+    ]);
   };
 
   const filtered = networkRecords
@@ -196,9 +198,8 @@ export default function NetworkAnomaly() {
           {/* Upload + Demo utilities */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div
-              className="lg:col-span-2 rounded-xl p-6 flex flex-col items-center justify-center gap-2.5 cursor-pointer border-2 border-dashed transition-all hover:border-[var(--accent)] text-center"
+              className="lg:col-span-2 rounded-xl p-6 flex flex-col items-center justify-center gap-2.5 border-2 border-dashed transition-all text-center"
               style={{ background: "var(--card)", borderColor: "var(--border)" }}
-              onClick={() => fileRef.current?.click()}
             >
               <div className="text-3xl opacity-60">🌐</div>
               <div>
@@ -206,10 +207,23 @@ export default function NetworkAnomaly() {
                   {loading ? "Analyzing network packets…" : `Current Dataset: ${networkDatasetName}`}
                 </p>
                 <p className="text-xs mt-0.5" style={{ color: "var(--muted-foreground)" }}>
-                  Click to upload CSV with fields: duration, protocol_type, service, flag, src_bytes, dst_bytes
+                  Upload CSV with fields: duration, protocol_type, service, flag, src_bytes, dst_bytes
                 </p>
               </div>
-              <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleUpload} />
+
+              <label
+                className="mt-1 px-5 py-2.5 rounded-lg text-xs font-mono font-semibold cursor-pointer transition-colors inline-flex items-center gap-2"
+                style={{ background: "var(--accent)", color: "white" }}
+              >
+                📁 Choose CSV File
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".csv"
+                  className="hidden"
+                  onChange={handleUpload}
+                />
+              </label>
 
               {loading && (
                 <div className="flex items-center gap-2 mt-2">
